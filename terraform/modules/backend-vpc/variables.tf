@@ -138,6 +138,27 @@ variable "oracle_skip_final_snapshot" {
   default     = true
 }
 
+variable "redis_node_type" {
+  type    = string
+  default = "cache.r6g.large"
+}
+
+variable "redis_engine_version" {
+  type    = string
+  default = "7.1"
+}
+
+variable "redis_num_cache_clusters" {
+  description = "Number of cache clusters (1 primary + replicas) in the replication group. 2 = primary + 1 replica across the two AZs."
+  type        = number
+  default     = 2
+}
+
+variable "redis_port" {
+  type    = number
+  default = 6379
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

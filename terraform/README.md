@@ -3,8 +3,9 @@
 Implements: Security VPC (FortiGate HA pair + Gateway Load Balancer +
 internet-facing ALB) → Transit Gateway hub → Frontend VPC (internal ALB +
 multi-AZ ASG) and Backend VPC (internal ALB + ASG + DocumentDB + RDS Oracle
-Multi-AZ), plus account-wide CloudTrail, GuardDuty, Security Hub, AWS Backup,
-and Cloudflare DNS/WAF/CDN in front of the internet-facing ALB.
+Multi-AZ + ElastiCache Redis), plus account-wide CloudTrail, GuardDuty,
+Security Hub, AWS Backup, and Cloudflare DNS/WAF/CDN in front of the
+internet-facing ALB.
 
 ## Prerequisites
 
@@ -50,10 +51,14 @@ terraform apply
   infrastructure level in `modules/security-vpc`. Actual FortiOS
   policy/SNAT/DNAT configuration on the FortiGate instances themselves is
   out of scope — that's appliance configuration, not AWS infrastructure.
-- Database master passwords are generated with `random_password` and stored
-  in Secrets Manager (`docdb_secret_arn` / `oracle_secret_arn` outputs) —
-  nothing is written to state or tfvars in plaintext beyond what Terraform
-  state always contains.
+- Database master passwords and the Redis auth token are generated with
+  `random_password` and stored in Secrets Manager (`docdb_secret_arn` /
+  `oracle_secret_arn` / `redis_auth_secret_arn` outputs) — nothing is
+  written to state or tfvars in plaintext beyond what Terraform state
+  always contains.
+- Redis (`aws_elasticache_replication_group`) is a Multi-AZ replication
+  group (1 primary + 1 replica, automatic failover) with at-rest + in-transit
+  encryption, reachable only from the backend app tier's security group.
 - `docdb_skip_final_snapshot` / `oracle_skip_final_snapshot` default to
   `true` so `terraform destroy` doesn't get stuck in this example — set to
   `false` for production.
@@ -69,7 +74,7 @@ modules/
   transit-gateway/  TGW + 3 VPC attachments + hub/spoke route tables
   security-vpc/     FortiGate HA pair, GWLB, GWLB endpoints, internet ALB
   frontend-vpc/     internal ALB + multi-AZ ASG
-  backend-vpc/      internal ALB + ASG, DocumentDB, RDS Oracle
+  backend-vpc/      internal ALB + ASG, DocumentDB, RDS Oracle, ElastiCache Redis
   aws-services/     CloudTrail, GuardDuty, Security Hub, AWS Backup
   cloudflare/       DNS record + WAF managed ruleset
 ```

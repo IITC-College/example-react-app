@@ -67,6 +67,16 @@ Parameters:
   pOracleMasterUsername:
     Type: String
     Default: oracleadmin
+  pRedisNodeType:
+    Type: String
+    Default: cache.r6g.large
+  pRedisEngineVersion:
+    Type: String
+    Default: "7.1"
+  pRedisNumCacheClusters:
+    Description: 1 primary + replicas. 2 = primary + 1 replica across the two AZs.
+    Type: Number
+    Default: 2
 
 Conditions:
   cHasKeyName: !Not [!Equals [!Ref pKeyName, ""]]
@@ -132,6 +142,25 @@ Resources:
       IpProtocol: tcp
       FromPort: 1521
       ToPort: 1521
+      SourceSecurityGroupId: !Ref AppSecurityGroup
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ElastiCache Redis, reachable only from the backend app tier
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcId" }
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-redis-sg" }
+
+  RedisSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RedisSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
       SourceSecurityGroupId: !Ref AppSecurityGroup
 
   InternalAlb:
@@ -289,6 +318,44 @@ Resources:
       DBSubnetGroupName: !Ref OracleDbSubnetGroup
       VPCSecurityGroups: [!Ref DbSecurityGroup]
 
+  # --- ElastiCache Redis (replication group, Multi-AZ automatic failover) -----
+  RedisAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${pNamePrefix}-redis-credentials"
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: auth_token
+        PasswordLength: 24
+        ExcludeCharacters: '"@/\'
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: !Sub "${pNamePrefix}-redis"
+      Description: ElastiCache Redis subnet group
+      SubnetIds:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendDbSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendDbSubnet2" }
+
+  RedisReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupId: !Sub "${pNamePrefix}-redis"
+      ReplicationGroupDescription: !Sub "${pNamePrefix} Redis cache (Multi-AZ, automatic failover)"
+      Engine: redis
+      EngineVersion: !Ref pRedisEngineVersion
+      CacheNodeType: !Ref pRedisNodeType
+      Port: 6379
+      NumCacheClusters: !Ref pRedisNumCacheClusters
+      AutomaticFailoverEnabled: true
+      MultiAZEnabled: true
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      SecurityGroupIds: [!Ref RedisSecurityGroup]
+      AtRestEncryptionEnabled: true
+      TransitEncryptionEnabled: true
+      AuthToken: !Sub "{{resolve:secretsmanager:${RedisAuthSecret}:SecretString:auth_token}}"
+
 Outputs:
   InternalAlbDnsName:
     Value: !GetAtt InternalAlb.DNSName
@@ -297,3 +364,7 @@ Outputs:
     Value: !GetAtt DocDbCluster.Endpoint
   OracleEndpoint:
     Value: !GetAtt OracleDbInstance.Endpoint.Address
+  RedisPrimaryEndpoint:
+    Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address
+  RedisReaderEndpoint:
+    Value: !GetAtt RedisReplicationGroup.ReaderEndPoint.Address

@@ -25,3 +25,15 @@ output "oracle_endpoint" {
 output "oracle_secret_arn" {
   value = aws_secretsmanager_secret.oracle.arn
 }
+
+output "redis_primary_endpoint" {
+  value = aws_elasticache_replication_group.this.primary_endpoint_address
+}
+
+output "redis_reader_endpoint" {
+  value = aws_elasticache_replication_group.this.reader_endpoint_address
+}
+
+output "redis_auth_secret_arn" {
+  value = aws_secretsmanager_secret.redis.arn
+}

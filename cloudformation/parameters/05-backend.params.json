@@ -18,5 +18,8 @@
   { "ParameterKey": "pOracleEngineVersion", "ParameterValue": "19" },
   { "ParameterKey": "pOracleLicenseModel", "ParameterValue": "license-included" },
   { "ParameterKey": "pOracleAllocatedStorage", "ParameterValue": "100" },
-  { "ParameterKey": "pOracleMasterUsername", "ParameterValue": "oracleadmin" }
+  { "ParameterKey": "pOracleMasterUsername", "ParameterValue": "oracleadmin" },
+  { "ParameterKey": "pRedisNodeType", "ParameterValue": "cache.r6g.large" },
+  { "ParameterKey": "pRedisEngineVersion", "ParameterValue": "7.1" },
+  { "ParameterKey": "pRedisNumCacheClusters", "ParameterValue": "2" }
 ]

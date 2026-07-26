@@ -2,9 +2,10 @@
 
 Implements the same architecture as `../terraform` (Security/Frontend/Backend
 VPCs, Transit Gateway hub, FortiGate + Gateway Load Balancer inspection,
-internal ALBs + Auto Scaling Groups, DocumentDB, RDS Oracle Multi-AZ, and
-account-wide CloudTrail/GuardDuty/Security Hub/Backup) using plain AWS
-resources — no third-party CLI/CDK required, just the AWS CLI (or console).
+internal ALBs + Auto Scaling Groups, DocumentDB, RDS Oracle Multi-AZ,
+ElastiCache Redis, and account-wide CloudTrail/GuardDuty/Security Hub/Backup)
+using plain AWS resources — no third-party CLI/CDK required, just the AWS
+CLI (or console).
 
 Cloudflare has no CloudFormation resource provider, so DNS/WAF/CDN in front
 of the ALB is out of scope here — see `../terraform/modules/cloudflare` if
@@ -111,3 +112,9 @@ done
   `ec2:DescribeNetworkInterfaces` and cleans up on stack deletion.
 - DocumentDB instance count is a simple 1-vs-2 toggle (`pDocDbInstanceCount`)
   rather than arbitrary N, to keep the template's `Conditions` simple.
+- Redis (`AWS::ElastiCache::ReplicationGroup` in `05-backend.yaml`) is a
+  Multi-AZ replication group (1 primary + 1 replica, automatic failover)
+  with at-rest + in-transit encryption. Its auth token is generated into
+  `RedisAuthSecret` (Secrets Manager) the same way the DocumentDB/Oracle
+  master passwords are, and it's reachable only from the backend app tier's
+  security group.

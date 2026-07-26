@@ -89,6 +89,33 @@ resource "aws_security_group" "db" {
   }
 }
 
+resource "aws_security_group" "redis" {
+  name_prefix = "${var.name}-redis-"
+  description = "ElastiCache Redis, reachable only from the backend app tier"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description       = "Redis from backend app tier"
+    from_port         = var.redis_port
+    to_port           = var.redis_port
+    protocol          = "tcp"
+    security_groups = [aws_security_group.app.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(var.tags, { Name = "${var.name}-redis-sg" })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 resource "aws_lb" "internal" {
   name               = "${var.name}-internal-alb"
   load_balancer_type = "application"
@@ -264,6 +291,51 @@ resource "aws_db_instance" "oracle" {
   vpc_security_group_ids    = [aws_security_group.db.id]
   skip_final_snapshot       = var.oracle_skip_final_snapshot
   final_snapshot_identifier = var.oracle_skip_final_snapshot ? null : "${var.name}-oracle-final"
+
+  tags = var.tags
+}
+
+# --- ElastiCache Redis (replication group, Multi-AZ automatic failover) -----
+
+resource "random_password" "redis" {
+  length           = 24
+  special          = true
+  override_special = "!#$%^&*()-_=+[]{}<>:?" # ElastiCache auth tokens forbid @ " / and spaces; none of these are in this set.
+}
+
+resource "aws_secretsmanager_secret" "redis" {
+  name = "${var.name}-redis-credentials"
+  tags = var.tags
+}
+
+resource "aws_secretsmanager_secret_version" "redis" {
+  secret_id = aws_secretsmanager_secret.redis.id
+  secret_string = jsonencode({
+    auth_token = random_password.redis.result
+  })
+}
+
+resource "aws_elasticache_subnet_group" "this" {
+  name       = "${var.name}-redis"
+  subnet_ids = var.db_subnet_ids
+  tags       = var.tags
+}
+
+resource "aws_elasticache_replication_group" "this" {
+  replication_group_id       = "${var.name}-redis"
+  description                 = "${var.name} Redis cache (Multi-AZ, automatic failover)"
+  engine                       = "redis"
+  engine_version               = var.redis_engine_version
+  node_type                    = var.redis_node_type
+  port                          = var.redis_port
+  num_cache_clusters          = var.redis_num_cache_clusters
+  automatic_failover_enabled = true
+  multi_az_enabled            = true
+  subnet_group_name           = aws_elasticache_subnet_group.this.name
+  security_group_ids          = [aws_security_group.redis.id]
+  at_rest_encryption_enabled = true
+  transit_encryption_enabled = true
+  auth_token                  = random_password.redis.result
 
   tags = var.tags
 }

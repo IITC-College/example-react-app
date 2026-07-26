@@ -153,6 +153,7 @@ module "backend_vpc" {
 
   docdb_instance_class   = var.docdb_instance_class
   oracle_instance_class = var.oracle_instance_class
+  redis_node_type          = var.redis_node_type
 
   tags = local.common_tags
 

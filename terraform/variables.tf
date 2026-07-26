@@ -90,6 +90,11 @@ variable "oracle_instance_class" {
   default = "db.r5.large"
 }
 
+variable "redis_node_type" {
+  type    = string
+  default = "cache.r6g.large"
+}
+
 # --- Cloudflare ---------------------------------------------------------------
 
 variable "cloudflare_api_token" {

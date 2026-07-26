@@ -35,6 +35,18 @@ output "oracle_secret_arn" {
   value = module.backend_vpc.oracle_secret_arn
 }
 
+output "redis_primary_endpoint" {
+  value = module.backend_vpc.redis_primary_endpoint
+}
+
+output "redis_reader_endpoint" {
+  value = module.backend_vpc.redis_reader_endpoint
+}
+
+output "redis_auth_secret_arn" {
+  value = module.backend_vpc.redis_auth_secret_arn
+}
+
 output "cloudtrail_bucket_name" {
   value = module.aws_services.cloudtrail_bucket_name
 }
