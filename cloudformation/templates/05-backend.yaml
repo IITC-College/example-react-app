@@ -1,0 +1,370 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Backend VPC compute + data: internal ALB + ASG (backend servers),
+  DocumentDB, and RDS Oracle (Multi-AZ). Deploy after 01-vpcs and
+  02-transit-gateway.
+
+Parameters:
+  pNamePrefix:
+    Type: String
+    Default: example-react-app
+  pNetworkStackName:
+    Type: String
+    Default: example-vpcs
+  pTgwStackName:
+    Type: String
+    Default: example-tgw
+  pFrontendVpcCidr:
+    Description: Must match the Frontend VPC CIDR used in 01-vpcs (the internal ALB is called by the frontend tier via TGW).
+    Type: String
+    Default: 10.1.0.0/20
+  pAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Amazon Linux 2023 AMI for the backend ASG
+  pInstanceType:
+    Type: String
+    Default: t3.medium
+  pKeyName:
+    Type: String
+    Default: ""
+  pMinSize:
+    Type: Number
+    Default: 2
+  pMaxSize:
+    Type: Number
+    Default: 4
+  pDesiredCapacity:
+    Type: Number
+    Default: 2
+  pDocDbInstanceClass:
+    Type: String
+    Default: db.r6g.large
+  pDocDbInstanceCount:
+    Type: Number
+    Default: 2
+  pDocDbMasterUsername:
+    Type: String
+    Default: docdbadmin
+  pDocDbEngineVersion:
+    Type: String
+    Default: "5.0.0"
+  pOracleInstanceClass:
+    Type: String
+    Default: db.r5.large
+  pOracleEngine:
+    Type: String
+    Default: oracle-se2
+  pOracleEngineVersion:
+    Description: Check `aws rds describe-db-engine-versions --engine oracle-se2` for valid values in your region.
+    Type: String
+    Default: "19"
+  pOracleLicenseModel:
+    Type: String
+    Default: license-included
+  pOracleAllocatedStorage:
+    Type: Number
+    Default: 100
+  pOracleMasterUsername:
+    Type: String
+    Default: oracleadmin
+  pRedisNodeType:
+    Type: String
+    Default: cache.r6g.large
+  pRedisEngineVersion:
+    Type: String
+    Default: "7.1"
+  pRedisNumCacheClusters:
+    Description: 1 primary + replicas. 2 = primary + 1 replica across the two AZs.
+    Type: Number
+    Default: 2
+
+Conditions:
+  cHasKeyName: !Not [!Equals [!Ref pKeyName, ""]]
+  cCreateSecondDocDbInstance: !Equals [!Ref pDocDbInstanceCount, 2]
+
+Resources:
+  # --- App tier: internal ALB + ASG ------------------------------------------
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Internal ALB for the backend target group
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcId" }
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: !Ref pFrontendVpcCidr }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcCidr" } }
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-alb-sg" }
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Backend Auto Scaling Group instances
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcId" }
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-app-sg" }
+
+  AppSecurityGroupIngressFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AppSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DocumentDB + RDS Oracle, reachable only from the backend app tier
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcId" }
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-db-sg" }
+
+  DbSecurityGroupIngressDocDb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 27017
+      ToPort: 27017
+      SourceSecurityGroupId: !Ref AppSecurityGroup
+
+  DbSecurityGroupIngressOracle:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 1521
+      ToPort: 1521
+      SourceSecurityGroupId: !Ref AppSecurityGroup
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ElastiCache Redis, reachable only from the backend app tier
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcId" }
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-redis-sg" }
+
+  RedisSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RedisSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      SourceSecurityGroupId: !Ref AppSecurityGroup
+
+  InternalAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${pNamePrefix}-backend-alb"
+      Type: application
+      Scheme: internal
+      Subnets:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendAppSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendAppSubnet2" }
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-alb" }
+
+  AppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${pNamePrefix}-backend-tg"
+      TargetType: instance
+      Protocol: HTTP
+      Port: 80
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcId" }
+      HealthCheckPath: /
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  AlbHttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref InternalAlb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - { Type: forward, TargetGroupArn: !Ref AppTargetGroup }
+
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${pNamePrefix}-backend-app"
+      LaunchTemplateData:
+        ImageId: !Ref pAmiId
+        InstanceType: !Ref pInstanceType
+        KeyName: !If [cHasKeyName, !Ref pKeyName, !Ref "AWS::NoValue"]
+        SecurityGroupIds: [!Ref AppSecurityGroup]
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - { Key: Name, Value: !Sub "${pNamePrefix}-backend-app" }
+
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "${pNamePrefix}-backend-asg"
+      VPCZoneIdentifier:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendAppSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendAppSubnet2" }
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      TargetGroupARNs: [!Ref AppTargetGroup]
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 120
+      MinSize: !Ref pMinSize
+      MaxSize: !Ref pMaxSize
+      DesiredCapacity: !Ref pDesiredCapacity
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-asg", PropagateAtLaunch: true }
+
+  AppDefaultRouteViaTgw:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendAppRouteTable" }
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !ImportValue { "Fn::Sub": "${pTgwStackName}-TransitGatewayId" }
+
+  # --- DocumentDB -------------------------------------------------------------
+  DocDbMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${pNamePrefix}-docdb-credentials"
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${pDocDbMasterUsername}"}'
+        GenerateStringKey: password
+        PasswordLength: 24
+        ExcludeCharacters: '"@/\'
+
+  DocDbSubnetGroup:
+    Type: AWS::DocDB::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub "${pNamePrefix}-docdb"
+      DBSubnetGroupDescription: DocumentDB subnet group
+      SubnetIds:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendDbSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendDbSubnet2" }
+
+  DocDbCluster:
+    Type: AWS::DocDB::DBCluster
+    Properties:
+      DBClusterIdentifier: !Sub "${pNamePrefix}-docdb"
+      EngineVersion: !Ref pDocDbEngineVersion
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DocDbMasterSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DocDbMasterSecret}:SecretString:password}}"
+      DBSubnetGroupName: !Ref DocDbSubnetGroup
+      VpcSecurityGroupIds: [!Ref DbSecurityGroup]
+      StorageEncrypted: true
+
+  DocDbInstance1:
+    Type: AWS::DocDB::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "${pNamePrefix}-docdb-0"
+      DBClusterIdentifier: !Ref DocDbCluster
+      DBInstanceClass: !Ref pDocDbInstanceClass
+
+  DocDbInstance2:
+    Type: AWS::DocDB::DBInstance
+    Condition: cCreateSecondDocDbInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "${pNamePrefix}-docdb-1"
+      DBClusterIdentifier: !Ref DocDbCluster
+      DBInstanceClass: !Ref pDocDbInstanceClass
+
+  # --- RDS Oracle (Multi-AZ) ---------------------------------------------------
+  OracleMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${pNamePrefix}-oracle-credentials"
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${pOracleMasterUsername}"}'
+        GenerateStringKey: password
+        PasswordLength: 24
+        ExcludeCharacters: '"@/\'
+
+  OracleDbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: RDS Oracle subnet group
+      SubnetIds:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendDbSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendDbSubnet2" }
+
+  OracleDbInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "${pNamePrefix}-oracle"
+      Engine: !Ref pOracleEngine
+      EngineVersion: !Ref pOracleEngineVersion
+      LicenseModel: !Ref pOracleLicenseModel
+      DBInstanceClass: !Ref pOracleInstanceClass
+      AllocatedStorage: !Ref pOracleAllocatedStorage
+      StorageEncrypted: true
+      MultiAZ: true
+      MasterUsername: !Sub "{{resolve:secretsmanager:${OracleMasterSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${OracleMasterSecret}:SecretString:password}}"
+      DBSubnetGroupName: !Ref OracleDbSubnetGroup
+      VPCSecurityGroups: [!Ref DbSecurityGroup]
+
+  # --- ElastiCache Redis (replication group, Multi-AZ automatic failover) -----
+  RedisAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${pNamePrefix}-redis-credentials"
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: auth_token
+        PasswordLength: 24
+        ExcludeCharacters: '"@/\'
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: !Sub "${pNamePrefix}-redis"
+      Description: ElastiCache Redis subnet group
+      SubnetIds:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendDbSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendDbSubnet2" }
+
+  RedisReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupId: !Sub "${pNamePrefix}-redis"
+      ReplicationGroupDescription: !Sub "${pNamePrefix} Redis cache (Multi-AZ, automatic failover)"
+      Engine: redis
+      EngineVersion: !Ref pRedisEngineVersion
+      CacheNodeType: !Ref pRedisNodeType
+      Port: 6379
+      NumCacheClusters: !Ref pRedisNumCacheClusters
+      AutomaticFailoverEnabled: true
+      MultiAZEnabled: true
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      SecurityGroupIds: [!Ref RedisSecurityGroup]
+      AtRestEncryptionEnabled: true
+      TransitEncryptionEnabled: true
+      AuthToken: !Sub "{{resolve:secretsmanager:${RedisAuthSecret}:SecretString:auth_token}}"
+
+Outputs:
+  InternalAlbDnsName:
+    Value: !GetAtt InternalAlb.DNSName
+    Export: { Name: !Sub "${AWS::StackName}-InternalAlbDnsName" }
+  DocDbClusterEndpoint:
+    Value: !GetAtt DocDbCluster.Endpoint
+  OracleEndpoint:
+    Value: !GetAtt OracleDbInstance.Endpoint.Address
+  RedisPrimaryEndpoint:
+    Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address
+  RedisReaderEndpoint:
+    Value: !GetAtt RedisReplicationGroup.ReaderEndPoint.Address

@@ -1,0 +1,4 @@
+[
+  { "ParameterKey": "pNamePrefix", "ParameterValue": "example-react-app" },
+  { "ParameterKey": "pNetworkStackName", "ParameterValue": "example-vpcs" }
+]

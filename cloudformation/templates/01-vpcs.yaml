@@ -1,0 +1,477 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Networking foundation: Security, Frontend, and Backend VPCs with their
+  subnets, Internet Gateway + NAT Gateway (Security VPC only), and one
+  route table per subnet group. Deploy first.
+
+Parameters:
+  pNamePrefix:
+    Type: String
+    Default: example-react-app
+  pAz1:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+  pAz2:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1b
+  pSecurityVpcCidr:
+    Type: String
+    Default: 10.0.0.0/22
+  pFrontendVpcCidr:
+    Type: String
+    Default: 10.1.0.0/20
+  pBackendVpcCidr:
+    Type: String
+    Default: 10.2.0.0/20
+
+Resources:
+  # ============================== Security VPC ==============================
+  SecurityVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pSecurityVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-vpc" }
+
+  SecurityInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-igw" }
+
+  SecurityVpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref SecurityVpc
+      InternetGatewayId: !Ref SecurityInternetGateway
+
+  SecurityPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SecurityVpc
+      AvailabilityZone: !Ref pAz1
+      CidrBlock: !Select [0, !Cidr [!Ref pSecurityVpcCidr, 8, 7]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-public-${pAz1}" }
+        - { Key: Tier, Value: public }
+
+  SecurityPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SecurityVpc
+      AvailabilityZone: !Ref pAz2
+      CidrBlock: !Select [1, !Cidr [!Ref pSecurityVpcCidr, 8, 7]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-public-${pAz2}" }
+        - { Key: Tier, Value: public }
+
+  SecurityGwlbeSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SecurityVpc
+      AvailabilityZone: !Ref pAz1
+      CidrBlock: !Select [2, !Cidr [!Ref pSecurityVpcCidr, 8, 7]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-gwlbe-${pAz1}" }
+        - { Key: Tier, Value: gwlbe }
+
+  SecurityGwlbeSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SecurityVpc
+      AvailabilityZone: !Ref pAz2
+      CidrBlock: !Select [3, !Cidr [!Ref pSecurityVpcCidr, 8, 7]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-gwlbe-${pAz2}" }
+        - { Key: Tier, Value: gwlbe }
+
+  SecurityFirewallSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SecurityVpc
+      AvailabilityZone: !Ref pAz1
+      CidrBlock: !Select [4, !Cidr [!Ref pSecurityVpcCidr, 8, 7]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-firewall-${pAz1}" }
+        - { Key: Tier, Value: firewall }
+
+  SecurityFirewallSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SecurityVpc
+      AvailabilityZone: !Ref pAz2
+      CidrBlock: !Select [5, !Cidr [!Ref pSecurityVpcCidr, 8, 7]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-firewall-${pAz2}" }
+        - { Key: Tier, Value: firewall }
+
+  SecurityTgwAttachSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SecurityVpc
+      AvailabilityZone: !Ref pAz1
+      CidrBlock: !Select [6, !Cidr [!Ref pSecurityVpcCidr, 8, 7]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-tgw-${pAz1}" }
+        - { Key: Tier, Value: tgw-attach }
+
+  SecurityTgwAttachSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SecurityVpc
+      AvailabilityZone: !Ref pAz2
+      CidrBlock: !Select [7, !Cidr [!Ref pSecurityVpcCidr, 8, 7]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-tgw-${pAz2}" }
+        - { Key: Tier, Value: tgw-attach }
+
+  SecurityNatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-nat-eip" }
+
+  SecurityNatGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: SecurityVpcGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt SecurityNatEip.AllocationId
+      SubnetId: !Ref SecurityPublicSubnet1
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-nat" }
+
+  SecurityPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SecurityVpc
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-public-rt" }
+
+  SecurityPublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: SecurityVpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref SecurityPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref SecurityInternetGateway
+
+  SecurityPublicSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SecurityPublicSubnet1
+      RouteTableId: !Ref SecurityPublicRouteTable
+
+  SecurityPublicSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SecurityPublicSubnet2
+      RouteTableId: !Ref SecurityPublicRouteTable
+
+  SecurityGwlbeRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SecurityVpc
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-gwlbe-rt" }
+
+  SecurityGwlbeSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SecurityGwlbeSubnet1
+      RouteTableId: !Ref SecurityGwlbeRouteTable
+
+  SecurityGwlbeSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SecurityGwlbeSubnet2
+      RouteTableId: !Ref SecurityGwlbeRouteTable
+
+  SecurityFirewallRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SecurityVpc
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-firewall-rt" }
+
+  SecurityFirewallSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SecurityFirewallSubnet1
+      RouteTableId: !Ref SecurityFirewallRouteTable
+
+  SecurityFirewallSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SecurityFirewallSubnet2
+      RouteTableId: !Ref SecurityFirewallRouteTable
+
+  SecurityTgwAttachRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SecurityVpc
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-tgw-rt" }
+
+  SecurityTgwAttachSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SecurityTgwAttachSubnet1
+      RouteTableId: !Ref SecurityTgwAttachRouteTable
+
+  SecurityTgwAttachSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SecurityTgwAttachSubnet2
+      RouteTableId: !Ref SecurityTgwAttachRouteTable
+
+  # ============================== Frontend VPC ==============================
+  FrontendVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pFrontendVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-vpc" }
+
+  FrontendAppSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FrontendVpc
+      AvailabilityZone: !Ref pAz1
+      CidrBlock: !Select [0, !Cidr [!Ref pFrontendVpcCidr, 4, 8]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-app-${pAz1}" }
+        - { Key: Tier, Value: app }
+
+  FrontendAppSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FrontendVpc
+      AvailabilityZone: !Ref pAz2
+      CidrBlock: !Select [1, !Cidr [!Ref pFrontendVpcCidr, 4, 8]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-app-${pAz2}" }
+        - { Key: Tier, Value: app }
+
+  FrontendTgwAttachSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FrontendVpc
+      AvailabilityZone: !Ref pAz1
+      CidrBlock: !Select [2, !Cidr [!Ref pFrontendVpcCidr, 4, 8]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-tgw-${pAz1}" }
+        - { Key: Tier, Value: tgw-attach }
+
+  FrontendTgwAttachSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref FrontendVpc
+      AvailabilityZone: !Ref pAz2
+      CidrBlock: !Select [3, !Cidr [!Ref pFrontendVpcCidr, 4, 8]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-tgw-${pAz2}" }
+        - { Key: Tier, Value: tgw-attach }
+
+  FrontendAppRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FrontendVpc
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-app-rt" }
+
+  FrontendAppSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FrontendAppSubnet1
+      RouteTableId: !Ref FrontendAppRouteTable
+
+  FrontendAppSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FrontendAppSubnet2
+      RouteTableId: !Ref FrontendAppRouteTable
+
+  FrontendTgwAttachRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref FrontendVpc
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-tgw-rt" }
+
+  FrontendTgwAttachSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FrontendTgwAttachSubnet1
+      RouteTableId: !Ref FrontendTgwAttachRouteTable
+
+  FrontendTgwAttachSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref FrontendTgwAttachSubnet2
+      RouteTableId: !Ref FrontendTgwAttachRouteTable
+
+  # ============================== Backend VPC ==============================
+  BackendVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pBackendVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-vpc" }
+
+  BackendAppSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BackendVpc
+      AvailabilityZone: !Ref pAz1
+      CidrBlock: !Select [0, !Cidr [!Ref pBackendVpcCidr, 6, 8]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-app-${pAz1}" }
+        - { Key: Tier, Value: app }
+
+  BackendAppSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BackendVpc
+      AvailabilityZone: !Ref pAz2
+      CidrBlock: !Select [1, !Cidr [!Ref pBackendVpcCidr, 6, 8]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-app-${pAz2}" }
+        - { Key: Tier, Value: app }
+
+  BackendDbSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BackendVpc
+      AvailabilityZone: !Ref pAz1
+      CidrBlock: !Select [2, !Cidr [!Ref pBackendVpcCidr, 6, 8]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-db-${pAz1}" }
+        - { Key: Tier, Value: db }
+
+  BackendDbSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BackendVpc
+      AvailabilityZone: !Ref pAz2
+      CidrBlock: !Select [3, !Cidr [!Ref pBackendVpcCidr, 6, 8]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-db-${pAz2}" }
+        - { Key: Tier, Value: db }
+
+  BackendTgwAttachSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BackendVpc
+      AvailabilityZone: !Ref pAz1
+      CidrBlock: !Select [4, !Cidr [!Ref pBackendVpcCidr, 6, 8]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-tgw-${pAz1}" }
+        - { Key: Tier, Value: tgw-attach }
+
+  BackendTgwAttachSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BackendVpc
+      AvailabilityZone: !Ref pAz2
+      CidrBlock: !Select [5, !Cidr [!Ref pBackendVpcCidr, 6, 8]]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-tgw-${pAz2}" }
+        - { Key: Tier, Value: tgw-attach }
+
+  BackendAppRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref BackendVpc
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-app-rt" }
+
+  BackendAppSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendAppSubnet1
+      RouteTableId: !Ref BackendAppRouteTable
+
+  BackendAppSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendAppSubnet2
+      RouteTableId: !Ref BackendAppRouteTable
+
+  BackendDbRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref BackendVpc
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-db-rt" }
+
+  BackendDbSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendDbSubnet1
+      RouteTableId: !Ref BackendDbRouteTable
+
+  BackendDbSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendDbSubnet2
+      RouteTableId: !Ref BackendDbRouteTable
+
+  BackendTgwAttachRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref BackendVpc
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-tgw-rt" }
+
+  BackendTgwAttachSubnet1RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendTgwAttachSubnet1
+      RouteTableId: !Ref BackendTgwAttachRouteTable
+
+  BackendTgwAttachSubnet2RtAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendTgwAttachSubnet2
+      RouteTableId: !Ref BackendTgwAttachRouteTable
+
+Outputs:
+  SecurityVpcId: { Value: !Ref SecurityVpc, Export: { Name: !Sub "${AWS::StackName}-SecurityVpcId" } }
+  SecurityVpcCidr: { Value: !Ref pSecurityVpcCidr, Export: { Name: !Sub "${AWS::StackName}-SecurityVpcCidr" } }
+  SecurityPublicSubnet1: { Value: !Ref SecurityPublicSubnet1, Export: { Name: !Sub "${AWS::StackName}-SecurityPublicSubnet1" } }
+  SecurityPublicSubnet2: { Value: !Ref SecurityPublicSubnet2, Export: { Name: !Sub "${AWS::StackName}-SecurityPublicSubnet2" } }
+  SecurityGwlbeSubnet1: { Value: !Ref SecurityGwlbeSubnet1, Export: { Name: !Sub "${AWS::StackName}-SecurityGwlbeSubnet1" } }
+  SecurityGwlbeSubnet2: { Value: !Ref SecurityGwlbeSubnet2, Export: { Name: !Sub "${AWS::StackName}-SecurityGwlbeSubnet2" } }
+  SecurityFirewallSubnet1: { Value: !Ref SecurityFirewallSubnet1, Export: { Name: !Sub "${AWS::StackName}-SecurityFirewallSubnet1" } }
+  SecurityFirewallSubnet2: { Value: !Ref SecurityFirewallSubnet2, Export: { Name: !Sub "${AWS::StackName}-SecurityFirewallSubnet2" } }
+  SecurityTgwAttachSubnet1: { Value: !Ref SecurityTgwAttachSubnet1, Export: { Name: !Sub "${AWS::StackName}-SecurityTgwAttachSubnet1" } }
+  SecurityTgwAttachSubnet2: { Value: !Ref SecurityTgwAttachSubnet2, Export: { Name: !Sub "${AWS::StackName}-SecurityTgwAttachSubnet2" } }
+  SecurityFirewallRouteTable: { Value: !Ref SecurityFirewallRouteTable, Export: { Name: !Sub "${AWS::StackName}-SecurityFirewallRouteTable" } }
+  SecurityNatGatewayId: { Value: !Ref SecurityNatGateway, Export: { Name: !Sub "${AWS::StackName}-SecurityNatGatewayId" } }
+
+  FrontendVpcId: { Value: !Ref FrontendVpc, Export: { Name: !Sub "${AWS::StackName}-FrontendVpcId" } }
+  FrontendVpcCidr: { Value: !Ref pFrontendVpcCidr, Export: { Name: !Sub "${AWS::StackName}-FrontendVpcCidr" } }
+  FrontendAppSubnet1: { Value: !Ref FrontendAppSubnet1, Export: { Name: !Sub "${AWS::StackName}-FrontendAppSubnet1" } }
+  FrontendAppSubnet2: { Value: !Ref FrontendAppSubnet2, Export: { Name: !Sub "${AWS::StackName}-FrontendAppSubnet2" } }
+  FrontendTgwAttachSubnet1: { Value: !Ref FrontendTgwAttachSubnet1, Export: { Name: !Sub "${AWS::StackName}-FrontendTgwAttachSubnet1" } }
+  FrontendTgwAttachSubnet2: { Value: !Ref FrontendTgwAttachSubnet2, Export: { Name: !Sub "${AWS::StackName}-FrontendTgwAttachSubnet2" } }
+  FrontendAppRouteTable: { Value: !Ref FrontendAppRouteTable, Export: { Name: !Sub "${AWS::StackName}-FrontendAppRouteTable" } }
+
+  BackendVpcId: { Value: !Ref BackendVpc, Export: { Name: !Sub "${AWS::StackName}-BackendVpcId" } }
+  BackendVpcCidr: { Value: !Ref pBackendVpcCidr, Export: { Name: !Sub "${AWS::StackName}-BackendVpcCidr" } }
+  BackendAppSubnet1: { Value: !Ref BackendAppSubnet1, Export: { Name: !Sub "${AWS::StackName}-BackendAppSubnet1" } }
+  BackendAppSubnet2: { Value: !Ref BackendAppSubnet2, Export: { Name: !Sub "${AWS::StackName}-BackendAppSubnet2" } }
+  BackendDbSubnet1: { Value: !Ref BackendDbSubnet1, Export: { Name: !Sub "${AWS::StackName}-BackendDbSubnet1" } }
+  BackendDbSubnet2: { Value: !Ref BackendDbSubnet2, Export: { Name: !Sub "${AWS::StackName}-BackendDbSubnet2" } }
+  BackendTgwAttachSubnet1: { Value: !Ref BackendTgwAttachSubnet1, Export: { Name: !Sub "${AWS::StackName}-BackendTgwAttachSubnet1" } }
+  BackendTgwAttachSubnet2: { Value: !Ref BackendTgwAttachSubnet2, Export: { Name: !Sub "${AWS::StackName}-BackendTgwAttachSubnet2" } }
+  BackendAppRouteTable: { Value: !Ref BackendAppRouteTable, Export: { Name: !Sub "${AWS::StackName}-BackendAppRouteTable" } }

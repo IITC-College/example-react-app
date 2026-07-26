@@ -1,0 +1,8 @@
+[
+  { "ParameterKey": "pNamePrefix", "ParameterValue": "example-react-app" },
+  { "ParameterKey": "pBackupSchedule", "ParameterValue": "cron(0 5 * * ? *)" },
+  { "ParameterKey": "pBackupColdStorageAfterDays", "ParameterValue": "30" },
+  { "ParameterKey": "pBackupDeleteAfterDays", "ParameterValue": "120" },
+  { "ParameterKey": "pBackupTagKey", "ParameterValue": "Backup" },
+  { "ParameterKey": "pBackupTagValue", "ParameterValue": "true" }
+]

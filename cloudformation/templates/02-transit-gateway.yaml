@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Transit Gateway hub connecting the Security, Frontend, and Backend VPCs.
+  Deploy after 01-vpcs. Security VPC is the hub route table (learns both
+  spokes); Frontend/Backend share a spoke route table (learn each other,
+  plus a static default route to the Security VPC for centralized egress).
+
+Parameters:
+  pNamePrefix:
+    Type: String
+    Default: example-react-app
+  pNetworkStackName:
+    Description: StackName used when deploying 01-vpcs.yaml
+    Type: String
+    Default: example-vpcs
+
+Resources:
+  TransitGateway:
+    Type: AWS::EC2::TransitGateway
+    Properties:
+      AmazonSideAsn: 64512
+      DefaultRouteTableAssociation: disable
+      DefaultRouteTablePropagation: disable
+      AutoAcceptSharedAttachments: disable
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-tgw" }
+
+  SecurityAttachment:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityVpcId" }
+      SubnetIds:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityTgwAttachSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityTgwAttachSubnet2" }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-attachment" }
+
+  FrontendAttachment:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendVpcId" }
+      SubnetIds:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendTgwAttachSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendTgwAttachSubnet2" }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-attachment" }
+
+  BackendAttachment:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcId" }
+      SubnetIds:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendTgwAttachSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendTgwAttachSubnet2" }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-attachment" }
+
+  SecurityTgwRouteTable:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-security-tgw-rt" }
+
+  SpokeTgwRouteTable:
+    Type: AWS::EC2::TransitGatewayRouteTable
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-spoke-tgw-rt" }
+
+  SecurityRouteTableAssoc:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref SecurityAttachment
+      TransitGatewayRouteTableId: !Ref SecurityTgwRouteTable
+
+  FrontendRouteTableAssoc:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref FrontendAttachment
+      TransitGatewayRouteTableId: !Ref SpokeTgwRouteTable
+
+  BackendRouteTableAssoc:
+    Type: AWS::EC2::TransitGatewayRouteTableAssociation
+    Properties:
+      TransitGatewayAttachmentId: !Ref BackendAttachment
+      TransitGatewayRouteTableId: !Ref SpokeTgwRouteTable
+
+  SecurityLearnsFrontend:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref FrontendAttachment
+      TransitGatewayRouteTableId: !Ref SecurityTgwRouteTable
+
+  SecurityLearnsBackend:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref BackendAttachment
+      TransitGatewayRouteTableId: !Ref SecurityTgwRouteTable
+
+  SpokeLearnsFrontend:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref FrontendAttachment
+      TransitGatewayRouteTableId: !Ref SpokeTgwRouteTable
+
+  SpokeLearnsBackend:
+    Type: AWS::EC2::TransitGatewayRouteTablePropagation
+    Properties:
+      TransitGatewayAttachmentId: !Ref BackendAttachment
+      TransitGatewayRouteTableId: !Ref SpokeTgwRouteTable
+
+  SpokeDefaultViaSecurity:
+    Type: AWS::EC2::TransitGatewayRoute
+    Properties:
+      TransitGatewayRouteTableId: !Ref SpokeTgwRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayAttachmentId: !Ref SecurityAttachment
+
+Outputs:
+  TransitGatewayId: { Value: !Ref TransitGateway, Export: { Name: !Sub "${AWS::StackName}-TransitGatewayId" } }
+  SecurityAttachmentId: { Value: !Ref SecurityAttachment, Export: { Name: !Sub "${AWS::StackName}-SecurityAttachmentId" } }
+  FrontendAttachmentId: { Value: !Ref FrontendAttachment, Export: { Name: !Sub "${AWS::StackName}-FrontendAttachmentId" } }
+  BackendAttachmentId: { Value: !Ref BackendAttachment, Export: { Name: !Sub "${AWS::StackName}-BackendAttachmentId" } }
