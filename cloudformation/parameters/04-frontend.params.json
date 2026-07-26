@@ -1,0 +1,12 @@
+[
+  { "ParameterKey": "pNamePrefix", "ParameterValue": "example-react-app" },
+  { "ParameterKey": "pNetworkStackName", "ParameterValue": "example-vpcs" },
+  { "ParameterKey": "pTgwStackName", "ParameterValue": "example-tgw" },
+  { "ParameterKey": "pSecurityVpcCidr", "ParameterValue": "10.0.0.0/22" },
+  { "ParameterKey": "pAmiId", "ParameterValue": "ami-CHANGEME" },
+  { "ParameterKey": "pInstanceType", "ParameterValue": "t3.medium" },
+  { "ParameterKey": "pKeyName", "ParameterValue": "" },
+  { "ParameterKey": "pMinSize", "ParameterValue": "2" },
+  { "ParameterKey": "pMaxSize", "ParameterValue": "4" },
+  { "ParameterKey": "pDesiredCapacity", "ParameterValue": "2" }
+]

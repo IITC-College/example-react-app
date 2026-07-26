@@ -1,0 +1,311 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Security VPC compute: FortiGate HA pair, Gateway Load Balancer +
+  GWLB endpoints, and the internet-facing ALB that fronts them (targets
+  are the GWLB endpoint IPs, so every request is inspected before
+  continuing on to the Transit Gateway). Deploy after 01-vpcs and
+  02-transit-gateway.
+  PRE-REQ: subscribe to the FortiGate BYOL AMI in AWS Marketplace and
+  look up its AMI ID for your region before deploying.
+
+Parameters:
+  pNamePrefix:
+    Type: String
+    Default: example-react-app
+  pNetworkStackName:
+    Type: String
+    Default: example-vpcs
+  pTgwStackName:
+    Type: String
+    Default: example-tgw
+  pFortiGateAmiId:
+    Description: FortiGate BYOL AMI ID (subscribe in AWS Marketplace first)
+    Type: AWS::EC2::Image::Id
+  pFortiGateInstanceType:
+    Type: String
+    Default: c5.xlarge
+  pFortiGateKeyName:
+    Description: EC2 key pair for FortiGate SSH/console access (leave blank to disable)
+    Type: String
+    Default: ""
+  pAdminIngressCidr:
+    Description: CIDR allowed to reach FortiGate management (HTTPS/SSH). Use 127.0.0.1/32 to effectively disable.
+    Type: String
+    Default: 127.0.0.1/32
+  pAlbIngressCidr:
+    Description: CIDR allowed to reach the internet-facing ALB. Restrict to Cloudflare's published ranges in production.
+    Type: String
+    Default: 0.0.0.0/0
+
+Conditions:
+  cHasKeyName: !Not [!Equals [!Ref pFortiGateKeyName, ""]]
+
+Resources:
+  # --- Security groups ---------------------------------------------------
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Internet-facing ALB (fronted by Cloudflare)
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityVpcId" }
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: !Ref pAlbIngressCidr }
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-alb-sg" }
+
+  FortiGateSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: FortiGate data + management interface
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityVpcId" }
+      SecurityGroupIngress:
+        - { IpProtocol: udp, FromPort: 6081, ToPort: 6081, CidrIp: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityVpcCidr" } }
+        - { IpProtocol: "-1", FromPort: -1, ToPort: -1, CidrIp: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityVpcCidr" } }
+        - { IpProtocol: "-1", FromPort: -1, ToPort: -1, CidrIp: !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendVpcCidr" } }
+        - { IpProtocol: "-1", FromPort: -1, ToPort: -1, CidrIp: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcCidr" } }
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref pAdminIngressCidr }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref pAdminIngressCidr }
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-fortigate-sg" }
+
+  # --- FortiGate HA pair ---------------------------------------------------
+  FortiGatePrimary:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref pFortiGateAmiId
+      InstanceType: !Ref pFortiGateInstanceType
+      SubnetId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityFirewallSubnet1" }
+      KeyName: !If [cHasKeyName, !Ref pFortiGateKeyName, !Ref "AWS::NoValue"]
+      SecurityGroupIds: [!Ref FortiGateSecurityGroup]
+      SourceDestCheck: false
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-fortigate-primary" }
+        - { Key: Role, Value: primary }
+
+  FortiGateHa:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref pFortiGateAmiId
+      InstanceType: !Ref pFortiGateInstanceType
+      SubnetId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityFirewallSubnet2" }
+      KeyName: !If [cHasKeyName, !Ref pFortiGateKeyName, !Ref "AWS::NoValue"]
+      SecurityGroupIds: [!Ref FortiGateSecurityGroup]
+      SourceDestCheck: false
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-fortigate-ha" }
+        - { Key: Role, Value: ha }
+
+  # --- Gateway Load Balancer + FortiGate target group -----------------------
+  Gwlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${pNamePrefix}-gwlb"
+      Type: gateway
+      Subnets:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityFirewallSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityFirewallSubnet2" }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-gwlb" }
+
+  FortiGateTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${pNamePrefix}-fortigate-tg"
+      TargetType: instance
+      Protocol: GENEVE
+      Port: 6081
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityVpcId" }
+      HealthCheckProtocol: TCP
+      HealthCheckPort: "22"
+      Targets:
+        - { Id: !Ref FortiGatePrimary }
+        - { Id: !Ref FortiGateHa }
+
+  GwlbListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Gwlb
+      DefaultActions:
+        - { Type: forward, TargetGroupArn: !Ref FortiGateTargetGroup }
+
+  GwlbEndpointService:
+    Type: AWS::EC2::VPCEndpointService
+    Properties:
+      AcceptanceRequired: false
+      GatewayLoadBalancerArns: [!Ref Gwlb]
+
+  # NOTE: AWS::EC2::VPCEndpointService's Ref returns its service ID
+  # (vpce-svc-xxxx); AWS deterministically names the corresponding service
+  # "com.amazonaws.vpce.<region>.<service-id>", so it's reconstructed here
+  # rather than looked up (there is no ServiceName GetAtt attribute).
+  GwlbEndpoint1:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: GatewayLoadBalancer
+      ServiceName: !Sub "com.amazonaws.vpce.${AWS::Region}.${GwlbEndpointService}"
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityVpcId" }
+      SubnetIds: [!ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityGwlbeSubnet1" }]
+
+  GwlbEndpoint2:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: GatewayLoadBalancer
+      ServiceName: !Sub "com.amazonaws.vpce.${AWS::Region}.${GwlbEndpointService}"
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityVpcId" }
+      SubnetIds: [!ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityGwlbeSubnet2" }]
+
+  # --- Custom resource: resolve each GWLB endpoint's ENI private IP, -------
+  # --- so it can be registered as an "ip" target on the internet ALB. ------
+  GwlbeIpLookupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DescribeEni
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeVpcEndpoints
+                  - ec2:DescribeNetworkInterfaces
+                Resource: "*"
+
+  GwlbeIpLookupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      Role: !GetAtt GwlbeIpLookupRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+          import boto3
+
+          def send(event, context, status, data=None, physical_id=None, reason=None):
+              data = data or {}
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": reason or f"See CloudWatch Logs: {context.log_stream_name}",
+                  "PhysicalResourceId": physical_id or context.log_stream_name,
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": data,
+              }).encode("utf-8")
+              req = urllib.request.Request(
+                  url=event["ResponseURL"], data=body, method="PUT",
+                  headers={"Content-Type": "", "Content-Length": str(len(body))},
+              )
+              urllib.request.urlopen(req)
+
+          def handler(event, context):
+              physical_id = event.get("PhysicalResourceId", "gwlbe-ip-lookup")
+              try:
+                  if event["RequestType"] == "Delete":
+                      send(event, context, "SUCCESS", physical_id=physical_id)
+                      return
+                  ec2 = boto3.client("ec2")
+                  vpce_id = event["ResourceProperties"]["VpcEndpointId"]
+                  vpce = ec2.describe_vpc_endpoints(VpcEndpointIds=[vpce_id])["VpcEndpoints"][0]
+                  eni_id = vpce["NetworkInterfaceIds"][0]
+                  eni = ec2.describe_network_interfaces(NetworkInterfaceIds=[eni_id])["NetworkInterfaces"][0]
+                  send(event, context, "SUCCESS", {"PrivateIp": eni["PrivateIpAddress"]}, physical_id=vpce_id)
+              except Exception as exc:
+                  send(event, context, "FAILED", reason=str(exc), physical_id=physical_id)
+
+  GwlbeIp1:
+    Type: Custom::GwlbeIp
+    Properties:
+      ServiceToken: !GetAtt GwlbeIpLookupFunction.Arn
+      VpcEndpointId: !Ref GwlbEndpoint1
+
+  GwlbeIp2:
+    Type: Custom::GwlbeIp
+    Properties:
+      ServiceToken: !GetAtt GwlbeIpLookupFunction.Arn
+      VpcEndpointId: !Ref GwlbEndpoint2
+
+  # --- Internet-facing ALB ----------------------------------------------------
+  InternetAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${pNamePrefix}-alb"
+      Type: application
+      Scheme: internet-facing
+      Subnets:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityPublicSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityPublicSubnet2" }
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-alb" }
+
+  # ALB target groups only support HTTP/HTTPS (not TCP/UDP). The GWLB
+  # endpoint forwards the underlying packets to FortiGate transparently
+  # regardless of this L7 protocol setting.
+  GwlbeIngressTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${pNamePrefix}-gwlbe-tg"
+      TargetType: ip
+      Protocol: HTTP
+      Port: 80
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityVpcId" }
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      Targets:
+        - { Id: !GetAtt GwlbeIp1.PrivateIp, Port: 80 }
+        - { Id: !GetAtt GwlbeIp2.PrivateIp, Port: 80 }
+
+  AlbHttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref InternetAlb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - { Type: forward, TargetGroupArn: !Ref GwlbeIngressTargetGroup }
+
+  # --- Firewall subnet routing: onward to TGW spokes, and back out to the ---
+  # --- internet via the NAT Gateway for centralized/inspected egress. -------
+  # NOTE: this wires the infrastructure path only. Actual FortiOS policies
+  # (allow/deny rules, SNAT/DNAT) must still be configured on the appliances.
+  FirewallRouteToFrontend:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityFirewallRouteTable" }
+      DestinationCidrBlock: !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendVpcCidr" }
+      TransitGatewayId: !ImportValue { "Fn::Sub": "${pTgwStackName}-TransitGatewayId" }
+
+  FirewallRouteToBackend:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityFirewallRouteTable" }
+      DestinationCidrBlock: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcCidr" }
+      TransitGatewayId: !ImportValue { "Fn::Sub": "${pTgwStackName}-TransitGatewayId" }
+
+  FirewallDefaultViaNat:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityFirewallRouteTable" }
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-SecurityNatGatewayId" }
+
+Outputs:
+  AlbDnsName:
+    Description: Point Cloudflare's CNAME at this.
+    Value: !GetAtt InternetAlb.DNSName
+    Export: { Name: !Sub "${AWS::StackName}-AlbDnsName" }
+  GwlbArn:
+    Value: !Ref Gwlb
+    Export: { Name: !Sub "${AWS::StackName}-GwlbArn" }

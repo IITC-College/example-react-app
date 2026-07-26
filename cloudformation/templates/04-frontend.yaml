@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Frontend VPC compute: internal ALB + multi-AZ Auto Scaling Group
+  ("Frontend target groups - Multi-AZ" in the diagram). Deploy after
+  01-vpcs and 02-transit-gateway.
+
+Parameters:
+  pNamePrefix:
+    Type: String
+    Default: example-react-app
+  pNetworkStackName:
+    Type: String
+    Default: example-vpcs
+  pTgwStackName:
+    Type: String
+    Default: example-tgw
+  pSecurityVpcCidr:
+    Description: Must match the Security VPC CIDR used in 01-vpcs (traffic to the internal ALB arrives via TGW from here).
+    Type: String
+    Default: 10.0.0.0/22
+  pAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Amazon Linux 2023 AMI for the frontend ASG (region-specific; see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/find-al2023-ami.html)
+  pInstanceType:
+    Type: String
+    Default: t3.medium
+  pKeyName:
+    Type: String
+    Default: ""
+  pMinSize:
+    Type: Number
+    Default: 2
+  pMaxSize:
+    Type: Number
+    Default: 4
+  pDesiredCapacity:
+    Type: Number
+    Default: 2
+
+Conditions:
+  cHasKeyName: !Not [!Equals [!Ref pKeyName, ""]]
+
+Resources:
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Internal ALB for the frontend target groups
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendVpcId" }
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: !Ref pSecurityVpcCidr }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendVpcCidr" } }
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-alb-sg" }
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Frontend Auto Scaling Group instances
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendVpcId" }
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-app-sg" }
+
+  AppSecurityGroupIngressFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AppSecurityGroup
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  InternalAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${pNamePrefix}-frontend-alb"
+      Type: application
+      Scheme: internal
+      Subnets:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendAppSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendAppSubnet2" }
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-alb" }
+
+  AppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${pNamePrefix}-frontend-tg"
+      TargetType: instance
+      Protocol: HTTP
+      Port: 80
+      VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendVpcId" }
+      HealthCheckPath: /
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  AlbHttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref InternalAlb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - { Type: forward, TargetGroupArn: !Ref AppTargetGroup }
+
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${pNamePrefix}-frontend-app"
+      LaunchTemplateData:
+        ImageId: !Ref pAmiId
+        InstanceType: !Ref pInstanceType
+        KeyName: !If [cHasKeyName, !Ref pKeyName, !Ref "AWS::NoValue"]
+        SecurityGroupIds: [!Ref AppSecurityGroup]
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-app" }
+
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "${pNamePrefix}-frontend-asg"
+      VPCZoneIdentifier:
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendAppSubnet1" }
+        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendAppSubnet2" }
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      TargetGroupARNs: [!Ref AppTargetGroup]
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 120
+      MinSize: !Ref pMinSize
+      MaxSize: !Ref pMaxSize
+      DesiredCapacity: !Ref pDesiredCapacity
+      Tags:
+        - { Key: Name, Value: !Sub "${pNamePrefix}-frontend-asg", PropagateAtLaunch: true }
+
+  # Default egress for the frontend app tier routes through the TGW to the
+  # Security VPC for centralized/inspected internet access.
+  AppDefaultRouteViaTgw:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-FrontendAppRouteTable" }
+      DestinationCidrBlock: 0.0.0.0/0
+      TransitGatewayId: !ImportValue { "Fn::Sub": "${pTgwStackName}-TransitGatewayId" }
+
+Outputs:
+  InternalAlbDnsName:
+    Value: !GetAtt InternalAlb.DNSName
+    Export: { Name: !Sub "${AWS::StackName}-InternalAlbDnsName" }

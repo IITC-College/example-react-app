@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Account-wide security services: CloudTrail, GuardDuty, Security Hub,
+  and AWS Backup. Independent of the networking stacks; can be deployed
+  at any time.
+
+Parameters:
+  pNamePrefix:
+    Type: String
+    Default: example-react-app
+  pBackupSchedule:
+    Type: String
+    Default: "cron(0 5 * * ? *)"
+  pBackupColdStorageAfterDays:
+    Type: Number
+    Default: 30
+  pBackupDeleteAfterDays:
+    Type: Number
+    Default: 120
+  pBackupTagKey:
+    Description: Resources tagged with this key/value are included in the AWS Backup plan.
+    Type: String
+    Default: Backup
+  pBackupTagValue:
+    Type: String
+    Default: "true"
+
+Resources:
+  # --- CloudTrail --------------------------------------------------------------
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${pNamePrefix}-cloudtrail-${AWS::AccountId}"
+      VersioningConfiguration: { Status: Enabled }
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - { ServerSideEncryptionByDefault: { SSEAlgorithm: aws:kms }, BucketKeyEnabled: true }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt CloudTrailBucket.Arn
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub "${CloudTrailBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals: { "s3:x-amz-acl": bucket-owner-full-control }
+
+  CloudTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: CloudTrailBucketPolicy
+    Properties:
+      TrailName: !Sub "${pNamePrefix}-trail"
+      S3BucketName: !Ref CloudTrailBucket
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+      IsLogging: true
+
+  # --- GuardDuty -----------------------------------------------------------------
+  GuardDutyDetector:
+    Type: AWS::GuardDuty::Detector
+    Properties:
+      Enable: true
+
+  # --- Security Hub -----------------------------------------------------------------
+  SecurityHub:
+    Type: AWS::SecurityHub::Hub
+    Properties: {}
+
+  SecurityHubStandardsSubscription:
+    Type: AWS::SecurityHub::StandardsSubscription
+    DependsOn: SecurityHub
+    Properties:
+      StandardsArn: !Sub "arn:${AWS::Partition}:securityhub:${AWS::Region}::standards/aws-foundational-security-best-practices/v/1.0.0"
+
+  # --- AWS Backup -----------------------------------------------------------------
+  BackupVault:
+    Type: AWS::Backup::BackupVault
+    Properties:
+      BackupVaultName: !Sub "${pNamePrefix}-backup-vault"
+
+  BackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: backup.amazonaws.com }, Action: sts:AssumeRole }
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores"
+
+  BackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: !Sub "${pNamePrefix}-backup-plan"
+        BackupPlanRule:
+          - RuleName: daily
+            TargetBackupVault: !Ref BackupVault
+            ScheduleExpression: !Ref pBackupSchedule
+            Lifecycle:
+              MoveToColdStorageAfterDays: !Ref pBackupColdStorageAfterDays
+              DeleteAfterDays: !Ref pBackupDeleteAfterDays
+
+  BackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupPlanId: !Ref BackupPlan
+      BackupSelection:
+        SelectionName: !Sub "${pNamePrefix}-backup-selection"
+        IamRoleArn: !GetAtt BackupRole.Arn
+        ListOfTags:
+          - { ConditionType: STRINGEQUALS, ConditionKey: !Ref pBackupTagKey, ConditionValue: !Ref pBackupTagValue }
+
+Outputs:
+  CloudTrailBucketName:
+    Value: !Ref CloudTrailBucket
+  GuardDutyDetectorId:
+    Value: !Ref GuardDutyDetector
+  BackupVaultName:
+    Value: !Ref BackupVault

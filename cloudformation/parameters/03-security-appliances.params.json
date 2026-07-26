@@ -1,0 +1,10 @@
+[
+  { "ParameterKey": "pNamePrefix", "ParameterValue": "example-react-app" },
+  { "ParameterKey": "pNetworkStackName", "ParameterValue": "example-vpcs" },
+  { "ParameterKey": "pTgwStackName", "ParameterValue": "example-tgw" },
+  { "ParameterKey": "pFortiGateAmiId", "ParameterValue": "ami-CHANGEME" },
+  { "ParameterKey": "pFortiGateInstanceType", "ParameterValue": "c5.xlarge" },
+  { "ParameterKey": "pFortiGateKeyName", "ParameterValue": "" },
+  { "ParameterKey": "pAdminIngressCidr", "ParameterValue": "203.0.113.10/32" },
+  { "ParameterKey": "pAlbIngressCidr", "ParameterValue": "0.0.0.0/0" }
+]

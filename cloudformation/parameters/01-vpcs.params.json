@@ -1,0 +1,8 @@
+[
+  { "ParameterKey": "pNamePrefix", "ParameterValue": "example-react-app" },
+  { "ParameterKey": "pAz1", "ParameterValue": "us-east-1a" },
+  { "ParameterKey": "pAz2", "ParameterValue": "us-east-1b" },
+  { "ParameterKey": "pSecurityVpcCidr", "ParameterValue": "10.0.0.0/22" },
+  { "ParameterKey": "pFrontendVpcCidr", "ParameterValue": "10.1.0.0/20" },
+  { "ParameterKey": "pBackendVpcCidr", "ParameterValue": "10.2.0.0/20" }
+]
