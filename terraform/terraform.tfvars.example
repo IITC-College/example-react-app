@@ -11,8 +11,10 @@ admin_ingress_cidrs = ["203.0.113.10/32"] # your admin IP(s)
 # Restrict to Cloudflare's published ranges in production: https://www.cloudflare.com/ips/
 alb_ingress_cidrs = ["0.0.0.0/0"]
 
-app_key_name = "my-ec2-keypair"
-
 # Cloudflare (set CLOUDFLARE_API_TOKEN in the environment instead of here)
 cloudflare_zone_id     = "your-cloudflare-zone-id"
 cloudflare_record_name = "app"
+
+# CI/CD: must match the GitHub repo that will assume the deploy role.
+github_org  = "IITC-College"
+github_repo = "example-react-app"

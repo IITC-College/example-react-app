@@ -1,8 +1,12 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Backend VPC compute + data: internal ALB + ASG (backend servers),
-  DocumentDB, and RDS Oracle (Multi-AZ). Deploy after 01-vpcs and
-  02-transit-gateway.
+  Backend VPC compute + data: internal ALB + ECS Fargate service running the
+  NestJS backend, DocumentDB, RDS Oracle (Multi-AZ), and ElastiCache Redis.
+  Deploy after 01-vpcs and 02-transit-gateway. The ECR repo starts empty, so
+  the service has 0 healthy tasks until CI/CD pushes an image — that's
+  expected on first deploy. Redeploy this stack with a new pImageTag
+  parameter to ship a new image (CloudFormation registers a new task
+  definition revision and updates the service automatically).
 
 Parameters:
   pNamePrefix:
@@ -18,24 +22,28 @@ Parameters:
     Description: Must match the Frontend VPC CIDR used in 01-vpcs (the internal ALB is called by the frontend tier via TGW).
     Type: String
     Default: 10.1.0.0/20
-  pAmiId:
-    Type: AWS::EC2::Image::Id
-    Description: Amazon Linux 2023 AMI for the backend ASG
-  pInstanceType:
+  pContainerPort:
+    Description: Port the backend container listens on (matches the NestJS Dockerfile's EXPOSE/PORT).
+    Type: Number
+    Default: 3000
+  pImageTag:
+    Description: Tag to deploy from the ECR repo this stack creates. CI/CD updates this on each deploy via --parameter-overrides.
     Type: String
-    Default: t3.medium
-  pKeyName:
+    Default: latest
+  pTaskCpu:
+    Description: Fargate task vCPU units (256 = 0.25 vCPU).
     Type: String
-    Default: ""
-  pMinSize:
+    Default: "256"
+  pTaskMemory:
+    Description: Fargate task memory in MiB.
+    Type: String
+    Default: "512"
+  pDesiredCount:
     Type: Number
     Default: 2
-  pMaxSize:
+  pLogRetentionDays:
     Type: Number
-    Default: 4
-  pDesiredCapacity:
-    Type: Number
-    Default: 2
+    Default: 30
   pDocDbInstanceClass:
     Type: String
     Default: db.r6g.large
@@ -79,11 +87,10 @@ Parameters:
     Default: 2
 
 Conditions:
-  cHasKeyName: !Not [!Equals [!Ref pKeyName, ""]]
   cCreateSecondDocDbInstance: !Equals [!Ref pDocDbInstanceCount, 2]
 
 Resources:
-  # --- App tier: internal ALB + ASG ------------------------------------------
+  # --- App tier: internal ALB + ECS Fargate service --------------------------
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -100,7 +107,7 @@ Resources:
   AppSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Backend Auto Scaling Group instances
+      GroupDescription: Backend Fargate service
       VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcId" }
       SecurityGroupEgress:
         - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
@@ -112,8 +119,8 @@ Resources:
     Properties:
       GroupId: !Ref AppSecurityGroup
       IpProtocol: tcp
-      FromPort: 80
-      ToPort: 80
+      FromPort: !Ref pContainerPort
+      ToPort: !Ref pContainerPort
       SourceSecurityGroupId: !Ref AlbSecurityGroup
 
   DbSecurityGroup:
@@ -180,11 +187,11 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       Name: !Sub "${pNamePrefix}-backend-tg"
-      TargetType: instance
+      TargetType: ip
       Protocol: HTTP
-      Port: 80
+      Port: !Ref pContainerPort
       VpcId: !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendVpcId" }
-      HealthCheckPath: /
+      HealthCheckPath: /health
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 3
 
@@ -197,38 +204,116 @@ Resources:
       DefaultActions:
         - { Type: forward, TargetGroupArn: !Ref AppTargetGroup }
 
-  AppLaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
+  # --- ECS Fargate -------------------------------------------------------------
+  EcrRepository:
+    Type: AWS::ECR::Repository
     Properties:
-      LaunchTemplateName: !Sub "${pNamePrefix}-backend-app"
-      LaunchTemplateData:
-        ImageId: !Ref pAmiId
-        InstanceType: !Ref pInstanceType
-        KeyName: !If [cHasKeyName, !Ref pKeyName, !Ref "AWS::NoValue"]
-        SecurityGroupIds: [!Ref AppSecurityGroup]
-        TagSpecifications:
-          - ResourceType: instance
-            Tags:
-              - { Key: Name, Value: !Sub "${pNamePrefix}-backend-app" }
+      RepositoryName: !Sub "${pNamePrefix}-backend-app"
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
 
-  AppAutoScalingGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
+  EcsCluster:
+    Type: AWS::ECS::Cluster
     Properties:
-      AutoScalingGroupName: !Sub "${pNamePrefix}-backend-asg"
-      VPCZoneIdentifier:
-        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendAppSubnet1" }
-        - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendAppSubnet2" }
-      LaunchTemplate:
-        LaunchTemplateId: !Ref AppLaunchTemplate
-        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
-      TargetGroupARNs: [!Ref AppTargetGroup]
-      HealthCheckType: ELB
-      HealthCheckGracePeriod: 120
-      MinSize: !Ref pMinSize
-      MaxSize: !Ref pMaxSize
-      DesiredCapacity: !Ref pDesiredCapacity
-      Tags:
-        - { Key: Name, Value: !Sub "${pNamePrefix}-backend-asg", PropagateAtLaunch: true }
+      ClusterName: !Sub "${pNamePrefix}-backend-cluster"
+      ClusterSettings:
+        - { Name: containerInsights, Value: enabled }
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${pNamePrefix}-backend"
+      RetentionInDays: !Ref pLogRetentionDays
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${pNamePrefix}-backend-ecs-execution"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ecs-tasks.amazonaws.com }, Action: sts:AssumeRole }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${pNamePrefix}-backend-ecs-task"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ecs-tasks.amazonaws.com }, Action: sts:AssumeRole }
+
+  # Task role gets read-only access to exactly the three secrets it needs at
+  # runtime — nothing broader.
+  TaskRoleSecretsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${pNamePrefix}-backend-task-secrets"
+      Roles: [!Ref TaskRole]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource:
+              - !Ref DocDbMasterSecret
+              - !Ref OracleMasterSecret
+              - !Ref RedisAuthSecret
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${pNamePrefix}-backend-app"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref pTaskCpu
+      Memory: !Ref pTaskMemory
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: backend
+          Image: !Sub "${EcrRepository.RepositoryUri}:${pImageTag}"
+          Essential: true
+          PortMappings:
+            - { ContainerPort: !Ref pContainerPort, Protocol: tcp }
+          Environment:
+            - { Name: PORT, Value: !Ref pContainerPort }
+            - { Name: DOCUMENTDB_ENDPOINT, Value: !GetAtt DocDbCluster.Endpoint }
+            - { Name: DOCUMENTDB_SECRET_ARN, Value: !Ref DocDbMasterSecret }
+            - { Name: ORACLE_ENDPOINT, Value: !GetAtt OracleDbInstance.Endpoint.Address }
+            - { Name: ORACLE_SECRET_ARN, Value: !Ref OracleMasterSecret }
+            - { Name: REDIS_PRIMARY_ENDPOINT, Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address }
+            - { Name: REDIS_SECRET_ARN, Value: !Ref RedisAuthSecret }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: backend
+
+  EcsService:
+    Type: AWS::ECS::Service
+    DependsOn: AlbHttpListener
+    Properties:
+      ServiceName: !Sub "${pNamePrefix}-backend-service"
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref pDesiredCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendAppSubnet1" }
+            - !ImportValue { "Fn::Sub": "${pNetworkStackName}-BackendAppSubnet2" }
+          SecurityGroups: [!Ref AppSecurityGroup]
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: backend
+          ContainerPort: !Ref pContainerPort
+          TargetGroupArn: !Ref AppTargetGroup
 
   AppDefaultRouteViaTgw:
     Type: AWS::EC2::Route
@@ -360,6 +445,24 @@ Outputs:
   InternalAlbDnsName:
     Value: !GetAtt InternalAlb.DNSName
     Export: { Name: !Sub "${AWS::StackName}-InternalAlbDnsName" }
+  EcrRepositoryUri:
+    Value: !GetAtt EcrRepository.RepositoryUri
+    Export: { Name: !Sub "${AWS::StackName}-EcrRepositoryUri" }
+  EcrRepositoryArn:
+    Value: !GetAtt EcrRepository.Arn
+    Export: { Name: !Sub "${AWS::StackName}-EcrRepositoryArn" }
+  EcsClusterName:
+    Value: !Ref EcsCluster
+    Export: { Name: !Sub "${AWS::StackName}-EcsClusterName" }
+  EcsServiceArn:
+    Value: !Ref EcsService
+    Export: { Name: !Sub "${AWS::StackName}-EcsServiceArn" }
+  ExecutionRoleArn:
+    Value: !GetAtt ExecutionRole.Arn
+    Export: { Name: !Sub "${AWS::StackName}-ExecutionRoleArn" }
+  TaskRoleArn:
+    Value: !GetAtt TaskRole.Arn
+    Export: { Name: !Sub "${AWS::StackName}-TaskRoleArn" }
   DocDbClusterEndpoint:
     Value: !GetAtt DocDbCluster.Endpoint
   OracleEndpoint:

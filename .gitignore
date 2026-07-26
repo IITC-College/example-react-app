@@ -7,10 +7,25 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Node (frontend/, backend/)
 node_modules
 dist
 dist-ssr
+coverage
 *.local
+
+# Terraform (terraform/, terraform/bootstrap/)
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+crash.log
+crash.*.log
+terraform.tfvars
+*.auto.tfvars
+
+# Claude Code local settings (machine/session-specific, not shared)
+.claude/settings.local.json
 
 # Editor directories and files
 .vscode/*

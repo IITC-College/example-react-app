@@ -66,16 +66,54 @@ variable "acm_certificate_arn" {
   default     = null
 }
 
-# --- Frontend / Backend app tiers --------------------------------------------
+# --- Frontend / Backend app tiers (ECS Fargate) ------------------------------
 
-variable "app_instance_type" {
-  type    = string
-  default = "t3.medium"
+variable "frontend_image_tag" {
+  description = "Image tag to deploy from the frontend ECR repo. Set by CI/CD on each deploy."
+  type        = string
+  default     = "latest"
 }
 
-variable "app_key_name" {
+variable "backend_image_tag" {
+  description = "Image tag to deploy from the backend ECR repo. Set by CI/CD on each deploy."
+  type        = string
+  default     = "latest"
+}
+
+variable "app_task_cpu" {
+  description = "Fargate task vCPU units (256 = 0.25 vCPU), used by both the frontend and backend services."
+  type        = string
+  default     = "256"
+}
+
+variable "app_task_memory" {
+  description = "Fargate task memory in MiB, used by both the frontend and backend services."
+  type        = string
+  default     = "512"
+}
+
+variable "app_desired_count" {
+  type    = number
+  default = 2
+}
+
+# --- CI/CD ---------------------------------------------------------------------
+
+variable "github_org" {
+  description = "GitHub organization/owner that owns this repo, used to scope the GitHub Actions OIDC deploy role."
+  type        = string
+  default     = "IITC-College"
+}
+
+variable "github_repo" {
   type    = string
-  default = null
+  default = "example-react-app"
+}
+
+variable "create_github_oidc_provider" {
+  description = "Set false if this AWS account already has a token.actions.githubusercontent.com OIDC provider registered (an account can only have one)."
+  type        = bool
+  default     = true
 }
 
 # --- Databases -----------------------------------------------------------------

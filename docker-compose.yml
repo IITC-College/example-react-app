@@ -1,0 +1,25 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "3001:3000"
+    environment:
+      - PORT=3000
+      # Point these at the DocumentDB/Oracle/Redis endpoints and secret ARNs
+      # from `terraform output` (or the CloudFormation stack outputs) when
+      # testing against real infra. Left unset for local-only work.
+      - DOCUMENTDB_ENDPOINT=
+      - ORACLE_ENDPOINT=
+      - REDIS_PRIMARY_ENDPOINT=
