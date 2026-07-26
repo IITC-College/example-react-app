@@ -1,0 +1,7 @@
+[
+  { "ParameterKey": "pGithubOrg", "ParameterValue": "IITC-College" },
+  { "ParameterKey": "pGithubRepo", "ParameterValue": "example-react-app" },
+  { "ParameterKey": "pFrontendStackName", "ParameterValue": "example-frontend" },
+  { "ParameterKey": "pBackendStackName", "ParameterValue": "example-backend" },
+  { "ParameterKey": "pOidcProviderArn", "ParameterValue": "" }
+]

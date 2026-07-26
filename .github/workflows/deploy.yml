@@ -1,0 +1,100 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+# Required repo variables (Settings -> Secrets and variables -> Actions -> Variables),
+# copied from `terraform output` / the CloudFormation stack outputs after the
+# infra has been applied at least once:
+#   AWS_REGION               e.g. us-east-1
+#   AWS_DEPLOY_ROLE_ARN       github_actions_deploy_role_arn / DeployRoleArn output
+#   FRONTEND_ECR_REPO         frontend_ecr_repository_url / EcrRepositoryUri output
+#   BACKEND_ECR_REPO          backend_ecr_repository_url / EcrRepositoryUri output
+#
+# Only one of deploy-terraform / deploy-cloudformation is meaningful in a real
+# deployment (whichever tree you actually applied) — delete the other job.
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - name: Build and push frontend image
+        working-directory: frontend
+        run: |
+          docker build -t "${{ vars.FRONTEND_ECR_REPO }}:${{ github.sha }}" -t "${{ vars.FRONTEND_ECR_REPO }}:latest" .
+          docker push "${{ vars.FRONTEND_ECR_REPO }}:${{ github.sha }}"
+          docker push "${{ vars.FRONTEND_ECR_REPO }}:latest"
+
+      - name: Build and push backend image
+        working-directory: backend
+        run: |
+          docker build -t "${{ vars.BACKEND_ECR_REPO }}:${{ github.sha }}" -t "${{ vars.BACKEND_ECR_REPO }}:latest" .
+          docker push "${{ vars.BACKEND_ECR_REPO }}:${{ github.sha }}"
+          docker push "${{ vars.BACKEND_ECR_REPO }}:latest"
+
+  deploy-terraform:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: |
+          terraform init
+          terraform apply -auto-approve \
+            -var="frontend_image_tag=${{ github.sha }}" \
+            -var="backend_image_tag=${{ github.sha }}"
+
+  deploy-cloudformation:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy frontend stack
+        working-directory: cloudformation
+        run: |
+          PARAMS=$(jq -r '.[] | "\(.ParameterKey)=\(.ParameterValue)"' parameters/04-frontend.params.json)
+          aws cloudformation deploy \
+            --stack-name example-frontend \
+            --template-file templates/04-frontend.yaml \
+            --parameter-overrides $PARAMS "pImageTag=${{ github.sha }}" \
+            --capabilities CAPABILITY_NAMED_IAM
+
+      - name: Deploy backend stack
+        working-directory: cloudformation
+        run: |
+          PARAMS=$(jq -r '.[] | "\(.ParameterKey)=\(.ParameterValue)"' parameters/05-backend.params.json)
+          aws cloudformation deploy \
+            --stack-name example-backend \
+            --template-file templates/05-backend.yaml \
+            --parameter-overrides $PARAMS "pImageTag=${{ github.sha }}" \
+            --capabilities CAPABILITY_NAMED_IAM

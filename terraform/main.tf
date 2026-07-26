@@ -107,7 +107,7 @@ module "security_vpc" {
   depends_on = [module.transit_gateway]
 }
 
-# --- Frontend VPC: internal ALB + multi-AZ ASG --------------------------------
+# --- Frontend VPC: internal ALB + ECS Fargate service (Next.js) --------------
 
 module "frontend_vpc" {
   source = "./modules/frontend-vpc"
@@ -123,15 +123,17 @@ module "frontend_vpc" {
   azs                = var.azs
   security_vpc_cidr = var.security_vpc_cidr
 
-  instance_type = var.app_instance_type
-  key_name       = var.app_key_name
+  image_tag     = var.frontend_image_tag
+  task_cpu       = var.app_task_cpu
+  task_memory   = var.app_task_memory
+  desired_count = var.app_desired_count
 
   tags = local.common_tags
 
   depends_on = [module.transit_gateway]
 }
 
-# --- Backend VPC: internal ALB + ASG + DocumentDB + RDS Oracle ---------------
+# --- Backend VPC: internal ALB + ECS Fargate service (NestJS) + DBs ---------
 
 module "backend_vpc" {
   source = "./modules/backend-vpc"
@@ -148,8 +150,10 @@ module "backend_vpc" {
   azs               = var.azs
   frontend_vpc_cidr = var.frontend_vpc_cidr
 
-  instance_type = var.app_instance_type
-  key_name       = var.app_key_name
+  image_tag     = var.backend_image_tag
+  task_cpu       = var.app_task_cpu
+  task_memory   = var.app_task_memory
+  desired_count = var.app_desired_count
 
   docdb_instance_class   = var.docdb_instance_class
   oracle_instance_class = var.oracle_instance_class
@@ -158,6 +162,33 @@ module "backend_vpc" {
   tags = local.common_tags
 
   depends_on = [module.transit_gateway]
+}
+
+# --- CI/CD: GitHub Actions OIDC deploy role -----------------------------------
+
+module "cicd" {
+  source = "./modules/cicd"
+
+  github_org           = var.github_org
+  github_repo          = var.github_repo
+  create_oidc_provider = var.create_github_oidc_provider
+
+  ecr_repository_arns = [
+    module.frontend_vpc.ecr_repository_arn,
+    module.backend_vpc.ecr_repository_arn,
+  ]
+  ecs_service_arns = [
+    module.frontend_vpc.ecs_service_arn,
+    module.backend_vpc.ecs_service_arn,
+  ]
+  task_role_arns = [
+    module.frontend_vpc.task_execution_role_arn,
+    module.frontend_vpc.task_role_arn,
+    module.backend_vpc.task_execution_role_arn,
+    module.backend_vpc.task_role_arn,
+  ]
+
+  tags = local.common_tags
 }
 
 # --- Account-wide security services -------------------------------------------

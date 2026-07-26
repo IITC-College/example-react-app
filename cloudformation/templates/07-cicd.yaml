@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  GitHub Actions -> AWS via OIDC federation (no long-lived access keys).
+  Deploy after 04-frontend and 05-backend (imports their ECR/ECS ARNs).
+  See: https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services
+
+Parameters:
+  pGithubOrg:
+    Type: String
+    Default: IITC-College
+  pGithubRepo:
+    Type: String
+    Default: example-react-app
+  pFrontendStackName:
+    Type: String
+    Default: example-frontend
+  pBackendStackName:
+    Type: String
+    Default: example-backend
+  pOidcProviderArn:
+    Description: >
+      Leave blank to create a new token.actions.githubusercontent.com OIDC
+      provider (an AWS account can only have one — this fails if your
+      account already has one). If it already has one, paste its ARN here
+      instead and this template will reuse it.
+    Type: String
+    Default: ""
+
+Conditions:
+  cCreateOidcProvider: !Equals [!Ref pOidcProviderArn, ""]
+
+Resources:
+  GithubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: cCreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      # GitHub's OIDC intermediate CA thumbprint. AWS validates against its
+      # own trusted CA bundle for this provider regardless of this value,
+      # but the API still requires one — see the guide linked above if this
+      # ever needs to change.
+      ThumbprintList: ["6938fd4d98bab03faadb97b34396831e3780aea"]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-actions-deploy
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If [cCreateOidcProvider, !Ref GithubOidcProvider, !Ref pOidcProviderArn]
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${pGithubOrg}/${pGithubRepo}:*"
+
+  DeployPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: github-actions-deploy
+      Roles: [!Ref DeployRole]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EcrAuth
+            Effect: Allow
+            Action: ecr:GetAuthorizationToken
+            Resource: "*" # this action does not support resource-level permissions
+
+          - Sid: EcrPushPull
+            Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:BatchGetImage
+              - ecr:PutImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+            Resource:
+              - !ImportValue { "Fn::Sub": "${pFrontendStackName}-EcrRepositoryArn" }
+              - !ImportValue { "Fn::Sub": "${pBackendStackName}-EcrRepositoryArn" }
+
+          - Sid: EcsDeploy
+            Effect: Allow
+            Action:
+              - ecs:DescribeServices
+              - ecs:DescribeTaskDefinition
+              - ecs:RegisterTaskDefinition
+            Resource: "*" # RegisterTaskDefinition/DescribeTaskDefinition do not support resource-level permissions
+
+          - Sid: EcsUpdateService
+            Effect: Allow
+            Action: ecs:UpdateService
+            Resource:
+              - !ImportValue { "Fn::Sub": "${pFrontendStackName}-EcsServiceArn" }
+              - !ImportValue { "Fn::Sub": "${pBackendStackName}-EcsServiceArn" }
+
+          - Sid: PassEcsRoles
+            Effect: Allow
+            Action: iam:PassRole
+            Resource:
+              - !ImportValue { "Fn::Sub": "${pFrontendStackName}-ExecutionRoleArn" }
+              - !ImportValue { "Fn::Sub": "${pFrontendStackName}-TaskRoleArn" }
+              - !ImportValue { "Fn::Sub": "${pBackendStackName}-ExecutionRoleArn" }
+              - !ImportValue { "Fn::Sub": "${pBackendStackName}-TaskRoleArn" }
+
+          # Lets CI redeploy 04-frontend/05-backend with a new pImageTag via
+          # `aws cloudformation deploy`. CloudFormation calls the underlying
+          # resource APIs (ecs:RegisterTaskDefinition/UpdateService above)
+          # using these same caller credentials — no separate CFN execution
+          # role in this setup, so nothing broader than the stack-management
+          # actions themselves is needed here.
+          - Sid: CloudFormationStackUpdate
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeChangeSet
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:GetTemplate
+            Resource:
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${pFrontendStackName}/*"
+              - !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${pBackendStackName}/*"
+
+Outputs:
+  DeployRoleArn:
+    Description: Copy this into the GitHub repo's Actions variables as AWS_DEPLOY_ROLE_ARN.
+    Value: !GetAtt DeployRole.Arn

@@ -1,16 +1,32 @@
-# React + Vite
+# example-react-app
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+- [`frontend/`](frontend) — Next.js (App Router, TypeScript) app.
+- [`backend/`](backend) — NestJS API.
+- [`terraform/`](terraform) — AWS infra (Terraform): Security/Frontend/Backend
+  VPCs behind a FortiGate + Gateway Load Balancer inspection point, ECS
+  Fargate running the two apps above, DocumentDB, RDS Oracle, ElastiCache
+  Redis, and a GitHub Actions OIDC deploy role.
+- [`cloudformation/`](cloudformation) — the same architecture as plain
+  CloudFormation templates, for teams that don't use Terraform.
+- [`.github/workflows/`](.github/workflows) — `ci.yml` (lint/test/build on
+  every push/PR) and `deploy.yml` (build+push images to ECR, then deploy via
+  either the Terraform or the CloudFormation tree, on push to `main`).
+- `docker-compose.yml` — run both apps locally.
 
-Currently, two official plugins are available:
+## Local development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+cd frontend && npm install && npm run dev   # http://localhost:3000
+cd backend && npm install && npm run start:dev  # http://localhost:3000 (separate terminal)
+```
 
-## React Compiler
+or `docker compose up --build` to run both together (frontend on 3000,
+backend on 3001).
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Deploying
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Pick one of `terraform/` or `cloudformation/` — see each folder's README for
+the full walkthrough (bootstrap/prerequisites, deploy order, and how CI/CD
+wires into it). Both provision the same AWS architecture; `deploy.yml` has a
+job for each, since only whichever one you actually applied is meaningful in
+a real account.
